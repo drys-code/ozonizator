@@ -37,7 +37,11 @@ def get_ozon_data() -> tuple[str, str | None, str]:
         page.goto(URL, wait_until="domcontentloaded", timeout=90000)
         page.wait_for_timeout(5000)
 
-        title = page.locator("meta[property='og:title']").get_attribute("content") or page.title()
+        title = page.title()
+
+        og_title = page.locator("meta[property='og:title']")
+        if og_title.count() > 0:
+            title = og_title.get_attribute("content") or title
         html = page.content()
         current_url = page.url
 

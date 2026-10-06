@@ -26,6 +26,15 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+# The console and redirected output on Windows default to cp1251, which cannot
+# encode "₽" or some Cyrillic text. Force UTF-8 before anything is printed.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -233,12 +242,14 @@ def main() -> int:
     stamp = now_vladivostok()
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+    ok = True
     try:
         price, reported_city, title = fetch_price(city)
         log(f"{stamp} | OK | price={price} ₽ | ozon_city={reported_city} | {title}")
         STATE_FILE.write_text(str(price), encoding="utf-8")
         message = build_message(price, reported_city, None)
     except Exception as exc:  # noqa: BLE001 - report any failure to the user
+        ok = False
         reason = f"{type(exc).__name__}: {exc}"
         log(f"{stamp} | ERROR | {reason}")
         message = build_message(None, "", reason)
@@ -247,10 +258,11 @@ def main() -> int:
         send_telegram(message)
         log(f"{stamp} | telegram=sent")
     except Exception as exc:  # noqa: BLE001
+        ok = False
         log(f"{stamp} | telegram=FAILED | {type(exc).__name__}: {exc}")
-        return 1
 
-    return 0 if "ERROR" not in message else 1
+    log(f"{stamp} | RESULT | {'ok' if ok else 'failed'}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

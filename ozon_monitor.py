@@ -7,7 +7,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-URL = "https://www.ozon.ru/product/kofe-v-zernah-lavazza-qualita-oro-arabika-250-g-926443964/?at=1nmn1NevvUpRsmF_g9WbNI1Gp2TDTAI7&sh=SXLvNfQ7fA&__rr=1"
+URL = "https://www.ozon.ru/search/?brand=87317891&brandcertified=t&from_global=true&text=Кофе+в+зернах+Lavazza+Qualita+Oro%2C+арабика%2C+250+г&weight=250.000%3B264.000"
 LOG_FILE = Path("logs/ozon_checks.txt")
 
 

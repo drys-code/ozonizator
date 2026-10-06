@@ -16,7 +16,7 @@ SEARCH_URL = (
 )
 
 # Your city for delivery (exactly as Ozon writes it, e.g. "Москва", "Санкт-Петербург")
-DELIVERY_CITY = "Москва"
+DELIVERY_CITY = "Владивосток"
 
 # Where to store the persistent browser profile (cookies, local storage)
 USER_DATA_DIR = Path("ozon_profile")

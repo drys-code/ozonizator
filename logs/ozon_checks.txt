@@ -8,3 +8,7 @@ Call log:
 2026-10-05 05:18:23 +0000 | OK | price=не определена | title=Похоже, нет соединения | url=https://ozon.ru/t/wEMAj40
 2026-10-05 17:03:51 +0000 | OK | price=не определена | title=Похоже, нет соединения | url=https://ozon.ru/t/wEMAj40
 2026-10-06 01:16:32 +0000 | OK | price=не определена | title=Похоже, нет соединения | url=https://ozon.ru/t/wEMAj40
+2026-10-06 10:43:02 +0000 | ERROR | Error: Page.goto: net::ERR_TIMED_OUT at https://www.ozon.ru/product/kofe-v-zernah-lavazza-qualita-oro-arabika-250-g-926443964/?at=1nmn1NevvUpRsmF_g9WbNI1Gp2TDTAI7&sh=SXLvNfQ7fA&__rr=1
+Call log:
+  - navigating to "https://www.ozon.ru/product/kofe-v-zernah-lavazza-qualita-oro-arabika-250-g-926443964/?at=1nmn1NevvUpRsmF_g9WbNI1Gp2TDTAI7&sh=SXLvNfQ7fA&__rr=1", waiting until "domcontentloaded"
+

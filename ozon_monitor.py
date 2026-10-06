@@ -6,7 +6,55 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-# -------------------------------------------------
+# -------------------------------------------------name: Ozon Price Monitor
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-price:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout репозитория
+        uses: actions/checkout@v4
+
+      - name: Установка Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Установка зависимостей Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Установка Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Запуск мониторинга цены
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python ozon_monitor.py
+
+      - name: Сохранение логов как артефакт
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ozon-logs-${{ github.run_number }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 7
 # НАСТРОЙКИ
 # -------------------------------------------------
 SEARCH_URL = (

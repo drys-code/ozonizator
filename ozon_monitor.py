@@ -1,219 +1,257 @@
+#!/usr/bin/env python3
+"""Ozon price monitor for Lavazza coffee beans (250 g).
+
+Checks the Ozon product page with a real browser, extracts the current card
+price, appends the result to logs/ozon_checks.txt and sends a Telegram message
+containing the price and a link to the product.
+
+Designed to run from a Russian IP address: Ozon blocks requests coming from
+foreign/VPN/datacenter IP addresses, so GitHub-hosted runners cannot read
+prices. See README.md.
+
+Environment / configuration
+---------------------------
+TELEGRAM_BOT_TOKEN   Telegram bot token (required)
+TELEGRAM_CHAT_ID     Telegram chat id (required)
+OZON_HEADLESS        "0" to watch the browser, default "1"
+OZON_CITY            Delivery city to request, default "Владивосток"
+
+Exit codes: 0 = price obtained (or deliberately skipped), 1 = failure.
+"""
+from __future__ import annotations
+
 import os
 import re
-from datetime import datetime, timezone
+import sys
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import requests
 from playwright.sync_api import sync_playwright
 
-# -------------------------------------------------name: Ozon Price Monitor
+# --- Product under watch -----------------------------------------------------
+# Lavazza Qualita Oro, coffee beans, 250 g
+PRODUCT_ID = "32933704"
+PRODUCT_URL = (
+    "https://www.ozon.ru/product/"
+    "kofe-v-zernah-lavazza-qualita-oro-250-g-32933704/"
+)
+PRODUCT_NAME = "Кофе в зёрнах Lavazza Qualita Oro, 250 г"
 
-on:
-  schedule:
-    - cron: '0 */4 * * *'
-  workflow_dispatch:
+# --- Settings ---------------------------------------------------------------
+DEFAULT_CITY = "Владивосток"
+LOG_FILE = Path("logs/ozon_checks.txt")
+STATE_FILE = Path("logs/last_price.txt")
 
-permissions:
-  contents: read
+# Vladivostok is UTC+10; fall back to the machine's local time.
+VLADIVOSTOK = timezone(timedelta(hours=10))
 
-jobs:
-  check-price:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout репозитория
-        uses: actions/checkout@v4
-
-      - name: Установка Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Установка зависимостей Python
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Установка Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-
-      - name: Запуск мониторинга цены
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python ozon_monitor.py
-
-      - name: Сохранение логов как артефакт
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ozon-logs-${{ github.run_number }}
-          path: logs/
-          if-no-files-found: ignore
-          retention-days: 7
-# НАСТРОЙКИ
-# -------------------------------------------------
-SEARCH_URL = (
-    "https://www.ozon.ru/search/?brand=87317891&brandcertified=t&from_global=true"
-    "&text=Кофе+в+зернах+Lavazza+Qualita+Oro%2C+арабика%2C+250+г"
-    "&weight=250.000%3B264.000"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-# Ваш город доставки
-DELIVERY_CITY = "Владивосток"
 
-USER_DATA_DIR = Path("ozon_profile")
-LOG_FILE = Path("logs/ozon_checks.txt")
+def now_vladivostok() -> str:
+    return datetime.now(VLADIVOSTOK).strftime("%Y-%m-%d %H:%M:%S +10")
 
 
-def set_delivery_city(page) -> None:
-    """Открывает выбор города и устанавливает DELIVERY_CITY."""
-    city_btn = page.locator("button:has-text('Москва'), button:has-text('Город')").first
-    if city_btn.count() == 0:
-        city_btn = page.locator("a:has-text('Москва'), a:has-text('Город')").first
-    if city_btn.count() == 0:
-        print("Не найден выбор города – пропускаем смену города")
-        return
-
-    city_btn.click()
-    page.wait_for_timeout(1000)
-
-    search_input = page.locator("input[placeholder*='город'], input[placeholder*='Город']").first
-    if search_input.count() == 0:
-        print("Не найдено поле поиска города")
-        return
-
-    search_input.fill(DELIVERY_CITY)
-    page.wait_for_timeout(1500)
-
-    suggestion = page.locator(f"text={DELIVERY_CITY}").first
-    if suggestion.count() > 0:
-        suggestion.click()
-        page.wait_for_timeout(2000)
-        print(f"Город установлен: {DELIVERY_CITY}")
-    else:
-        print(f"Город '{DELIVERY_CITY}' не найден в подсказках")
+def log(line: str) -> None:
+    print(line, flush=True)
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
 
 
-def get_first_product_url(page) -> str | None:
-    """Возвращает URL первой карточки товара на странице поиска."""
-    links = page.locator("a[href*='/product/']").all()
-    for link in links:
-        href = link.get_attribute("href")
-        if href and "/product/" in href:
-            if href.startswith("/"):
-                href = "https://www.ozon.ru" + href
-            href = href.split("?")[0]
-            return href
+def parse_price(block_text: str | None) -> int | None:
+    """Extract the card price from the Ozon `webPrice` widget text.
+
+    Real widget text looks like:
+      "744 ₽ | С банками | 759 ₽ | 829 ₽ | С другими банками | 298 ₽ за 100 гр"
+    The first "<number> ₽" that is not part of a per-unit comparison
+    ("... за 100 гр") is the price of the card.
+    """
+    if not block_text:
+        return None
+    text = block_text.replace("\u2009", " ").replace("\u00a0", " ")
+    for match in re.finditer(r"(\d[\d\s]*)\s*₽", text):
+        prefix = text[max(0, match.start() - 12):match.start()].lower()
+        tail = text[match.end():match.end() + 12].lower()
+        per_unit = ("гр", "кг", "мл", " л")
+        if ("за" in prefix and any(u in prefix for u in per_unit)) or (
+            "за" in tail and any(u in tail for u in per_unit)
+        ):
+            continue
+        value = int(re.sub(r"\D", "", match.group(1)) or 0)
+        if value > 0:
+            return value
     return None
 
 
-def parse_price(page) -> str | None:
-    """Извлекает цену со страницы товара."""
-    price_block = page.locator("[data-widget='webPrice']")
-    if price_block.count() == 0:
-        return None
-
-    price_el = price_block.locator("[class*='tsHeadline600Large']").first
-    if price_el.count() > 0:
-        text = price_el.inner_text()
-    else:
-        text = price_block.inner_text()
-
-    cleaned = re.sub(r"[^\d.,]", "", text.replace("\u2009", "").replace("\u00A0", ""))
-    cleaned = cleaned.replace(",", ".")
-    match = re.search(r"\d+(?:\.\d+)?", cleaned)
-    return match.group(0) if match else None
+class PriceUnavailable(RuntimeError):
+    """Raised when Ozon serves a page without a usable price."""
 
 
-def get_ozon_data() -> tuple[str, str | None, str]:
-    """Возвращает (название, цена, итоговый URL) для первой карточки товара."""
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(USER_DATA_DIR),
-            headless=True,
-            viewport={"width": 1440, "height": 1000},
+def fetch_price(city: str) -> tuple[int | None, str, str]:
+    """Return (price, city_reported_by_ozon, product_title)."""
+    headless = os.environ.get("OZON_HEADLESS", "1") != "0"
+
+    with sync_playwright() as play:
+        browser = play.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+        )
+        context = browser.new_context(
             locale="ru-RU",
+            timezone_id="Asia/Vladivostok",
+            viewport={"width": 1440, "height": 1000},
+            user_agent=USER_AGENT,
+            extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9"},
         )
         page = context.new_page()
+        try:
+            response = page.goto(
+                PRODUCT_URL, wait_until="domcontentloaded", timeout=90_000
+            )
+            status = response.status if response else None
+            page.wait_for_timeout(6000)
 
-        page.goto("https://www.ozon.ru", wait_until="domcontentloaded", timeout=90000)
-        page.wait_for_timeout(3000)
+            title = page.title()
+            if "нет соединения" in title.lower():
+                raise PriceUnavailable(
+                    "Ozon вернул страницу «Похоже, нет соединения» "
+                    f"(HTTP {status}). Обычно это блокировка по IP: "
+                    "нужен российский IP-адрес."
+                )
 
-        set_delivery_city(page)
+            bar = page.locator("[data-widget='addressBookBarWeb']")
+            reported_city = (
+                bar.first.inner_text().replace("\n", " ").strip()
+                if bar.count()
+                else ""
+            )
 
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=90000)
-        page.wait_for_timeout(5000)
+            heading = page.locator("[data-widget='webProductHeading']")
+            if heading.count():
+                title = heading.first.inner_text().replace("\n", " ").strip() or title
 
-        product_url = get_first_product_url(page)
-        if not product_url:
-            raise RuntimeError("Не найдена ссылка на товар на странице поиска")
+            price_widget = page.locator("[data-widget='webPrice']")
+            if price_widget.count() == 0:
+                raise PriceUnavailable(
+                    f"Блок с ценой не найден (HTTP {status}, title={title!r})"
+                )
 
-        page.goto(product_url, wait_until="domcontentloaded", timeout=90000)
-        page.wait_for_timeout(5000)
+            price = parse_price(price_widget.first.inner_text())
+            if price is None:
+                raise PriceUnavailable("Цена на странице не распознана")
+            return price, reported_city, title
+        finally:
+            context.close()
+            browser.close()
 
-        title = page.title()
-        og_title = page.locator("meta[property='og:title']")
-        if og_title.count() > 0:
-            title = og_title.get_attribute("content") or title
 
-        price = parse_price(page)
-        final_url = page.url
-        context.close()
+SECRETS_FILE = Path.home() / ".ozonizator" / "secrets.env"
 
-    return title.strip(), price, final_url
+
+def load_local_secrets() -> None:
+    """Load TELEGRAM_* from %USERPROFILE%\\.ozonizator\\secrets.env if present.
+
+    Keeps credentials out of the repository. Variables already present in the
+    environment take priority.
+    """
+    if not SECRETS_FILE.is_file():
+        return
+    for raw in SECRETS_FILE.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def send_telegram(text: str) -> None:
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise RuntimeError(
+            "Не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID "
+            "(см. run_monitor.cmd или файл секретов)"
+        )
     response = requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
         json={
             "chat_id": chat_id,
             "text": text,
-            "disable_web_page_preview": True,
+            "disable_web_page_preview": False,
         },
         timeout=30,
     )
-    response.raise_for_status()
+    if response.status_code != 200:
+        raise RuntimeError(f"Telegram API {response.status_code}: {response.text[:300]}")
 
 
-def main() -> None:
-    checked_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+def previous_price() -> int | None:
+    try:
+        return int(STATE_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def build_message(price: int | None, city: str, error: str | None) -> str:
+    stamp = now_vladivostok()
+    if error:
+        return (
+            "⚠️ Не удалось проверить цену\n\n"
+            f"Товар: {PRODUCT_NAME}\n"
+            f"Время: {stamp}\n"
+            f"Причина: {error}\n\n"
+            f"{PRODUCT_URL}"
+        )
+
+    was = previous_price()
+    trend = ""
+    if was is not None and was != price:
+        diff = price - was
+        arrow = "📉" if diff < 0 else "📈"
+        trend = f"\n{arrow} Изменение: {diff:+d} ₽ (было {was} ₽)"
+
+    return (
+        "☕️ Ozon: цена на кофе\n\n"
+        f"Товар: {PRODUCT_NAME}\n"
+        f"Цена: {price} ₽{trend}\n"
+        f"Город доставки: {city or 'не определён'}\n"
+        f"Время: {stamp}\n\n"
+        f"{PRODUCT_URL}"
+    )
+
+
+def main() -> int:
+    load_local_secrets()
+    city = os.environ.get("OZON_CITY", DEFAULT_CITY)
+    stamp = now_vladivostok()
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        title, price, final_url = get_ozon_data()
+        price, reported_city, title = fetch_price(city)
+        log(f"{stamp} | OK | price={price} ₽ | ozon_city={reported_city} | {title}")
+        STATE_FILE.write_text(str(price), encoding="utf-8")
+        message = build_message(price, reported_city, None)
+    except Exception as exc:  # noqa: BLE001 - report any failure to the user
+        reason = f"{type(exc).__name__}: {exc}"
+        log(f"{stamp} | ERROR | {reason}")
+        message = build_message(None, "", reason)
 
-        price_text = f"{price} ₽" if price else "не определена"
-        log_line = f"{checked_at} | OK | price={price_text} | title={title} | url={final_url}\n"
+    try:
+        send_telegram(message)
+        log(f"{stamp} | telegram=sent")
+    except Exception as exc:  # noqa: BLE001
+        log(f"{stamp} | telegram=FAILED | {type(exc).__name__}: {exc}")
+        return 1
 
-        message = (
-            "🛒 Проверка Ozon\n"
-            f"Товар: {title}\n"
-            f"Цена: {price_text}\n"
-            f"Время: {checked_at}\n"
-            f"{final_url}"
-        )
-    except Exception as error:
-        log_line = f"{checked_at} | ERROR | {type(error).__name__}: {error}\n"
-        message = (
-            "⚠️ Ошибка проверки Ozon\n"
-            f"Время: {checked_at}\n"
-            f"Ошибка: {type(error).__name__}: {error}"
-        )
-
-    with LOG_FILE.open("a", encoding="utf-8") as file:
-        file.write(log_line)
-
-    send_telegram(message)
+    return 0 if "ERROR" not in message else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

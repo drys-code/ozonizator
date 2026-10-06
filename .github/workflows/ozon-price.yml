@@ -1,8 +1,19 @@
 name: Ozon Price Monitor
 
+# ВНИМАНИЕ: запуск на GitHub-hosted runner НЕ РАБОТАЕТ.
+#
+# Ozon отдаёт с зарубежных и датацентровых IP страницу-заглушку
+# "Похоже, нет соединения" (HTTP 403), поэтому цену получить нельзя.
+# Это проверено экспериментально: см. README.md, раздел
+# "Почему это не работает на GitHub Actions".
+#
+# Расписание намеренно отключено, чтобы не присылать ложные сообщения.
+# Workflow заработает, если заменить runs-on на self-hosted runner
+# с российским домашним IP.
+
 on:
-  schedule:
-    - cron: '0 */4 * * *'
+  # schedule:
+  #   - cron: '0 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +32,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Установка зависимостей Python
         run: |
@@ -30,16 +40,8 @@ jobs:
 
       - name: Установка браузера Chromium для Playwright
         run: |
-          playwright install chromium
-          playwright install-deps chromium
-
-      - name: Восстановление профиля браузера из кэша
-        uses: actions/cache@v4
-        with:
-          path: ozon_profile
-          key: ozon-profile-${{ github.run_id }}
-          restore-keys: |
-            ozon-profile-
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
 
       - name: Запуск мониторинга цены
         env:

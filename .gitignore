@@ -1,0 +1,9 @@
+# Local runtime output
+logs/
+ozon_profile/
+__pycache__/
+*.pyc
+
+# Local secrets - never commit
+secrets.env
+.ozonizator/

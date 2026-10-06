@@ -27,3 +27,9 @@ Call log:
 2026-10-06 22:06:03 +10 | OK | price=744 ₽ | ozon_city=Иркутск • Укажите адрес | Кофе в зёрнах Lavazza Qualita Oro, 250 г
 2026-10-06 22:06:03 +10 | telegram=FAILED | RuntimeError: Не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (см. run_monitor.cmd или файл секретов)
 2026-10-06 22:06:03 +10 | RESULT | failed
+2026-10-06 22:07:33 +10 | OK | price=744 ₽ | ozon_city=Иркутск • Укажите адрес | Кофе в зёрнах Lavazza Qualita Oro, 250 г
+2026-10-06 22:07:33 +10 | telegram=FAILED | RuntimeError: Не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (см. run_monitor.cmd или файл секретов)
+2026-10-06 22:07:33 +10 | RESULT | failed
+2026-10-06 22:10:38 +10 | OK | price=744 ₽ | ozon_city=Иркутск • Укажите адрес | Кофе в зёрнах Lavazza Qualita Oro, 250 г
+2026-10-06 22:10:38 +10 | telegram=FAILED | RuntimeError: Не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (см. run_monitor.cmd или файл секретов)
+2026-10-06 22:10:38 +10 | RESULT | failed

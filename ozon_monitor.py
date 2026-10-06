@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -241,6 +243,90 @@ def previous_price() -> int | None:
         return None
 
 
+# --- Notification via GitHub Actions ----------------------------------------
+# When OZON_TELEGRAM_VIA_GITHUB=1, the message is not sent straight to Telegram.
+# Instead this workflow is triggered and it sends the message on the runner,
+# using the repository secrets. That way the bot token never has to exist on
+# this computer.
+GITHUB_REPO = "drys-code/ozonizator"
+GITHUB_WORKFLOW_FILE = "ozon-price.yml"
+GITHUB_REF = "main"
+
+
+def _github_token() -> str | None:
+    """Return a GitHub token: env var first, then the Git credential manager."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        return token.strip()
+
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        completed = subprocess.run(
+            [git, "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    for line in completed.stdout.splitlines():
+        if line.startswith("password="):
+            value = line[len("password="):].strip()
+            if value:
+                return value
+    return None
+
+
+def notify_via_github(price: int | None, city: str, error: str | None) -> None:
+    """Trigger the GitHub Actions workflow that sends the Telegram message."""
+    token = _github_token()
+    if not token:
+        raise RuntimeError(
+            "Не найден GitHub-токен (нет GITHUB_TOKEN/GH_TOKEN и записи в "
+            "git credential manager)"
+        )
+
+    payload = {
+        "ref": GITHUB_REF,
+        "inputs": {
+            "price": str(price) if price is not None else "",
+            "city": city or "",
+            "product_url": PRODUCT_URL,
+        },
+    }
+    if error:
+        payload["inputs"]["error"] = error
+    elif price is not None:
+        was = previous_price()
+        if was is not None and was != price:
+            diff = price - was
+            arrow = "📉" if diff < 0 else "📈"
+            payload["inputs"]["trend"] = f"{arrow} Изменение: {diff:+d} ₽ (было {was} ₽)"
+
+    url = (
+        f"https://api.github.com/repos/{GITHUB_REPO}"
+        f"/actions/workflows/{GITHUB_WORKFLOW_FILE}/dispatches"
+    )
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        json=payload,
+        timeout=30,
+    )
+    if response.status_code not in (201, 204):
+        raise RuntimeError(
+            f"GitHub API {response.status_code}: {response.text[:300]}"
+        )
+
+
 def build_message(price: int | None, city: str, error: str | None) -> str:
     stamp = now_vladivostok()
     if error:
@@ -272,24 +358,30 @@ def build_message(price: int | None, city: str, error: str | None) -> str:
 def main() -> int:
     load_local_secrets()
     city = os.environ.get("OZON_CITY", DEFAULT_CITY)
+    via_github = os.environ.get("OZON_TELEGRAM_VIA_GITHUB", "").strip() == "1"
     stamp = now_vladivostok()
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     ok = True
+    price: int | None = None
+    reported_city = ""
+    error: str | None = None
     try:
         price, reported_city, title = fetch_price(city)
         log(f"{stamp} | OK | price={price} ₽ | ozon_city={reported_city} | {title}")
         STATE_FILE.write_text(str(price), encoding="utf-8")
-        message = build_message(price, reported_city, None)
     except Exception as exc:  # noqa: BLE001 - report any failure to the user
         ok = False
-        reason = f"{type(exc).__name__}: {exc}"
-        log(f"{stamp} | ERROR | {reason}")
-        message = build_message(None, "", reason)
+        error = f"{type(exc).__name__}: {exc}"
+        log(f"{stamp} | ERROR | {error}")
 
     try:
-        send_telegram(message)
-        log(f"{stamp} | telegram=sent")
+        if via_github:
+            notify_via_github(price, reported_city, error)
+            log(f"{stamp} | telegram=dispatched via GitHub Actions")
+        else:
+            send_telegram(build_message(price, reported_city, error))
+            log(f"{stamp} | telegram=sent")
     except Exception as exc:  # noqa: BLE001
         ok = False
         log(f"{stamp} | telegram=FAILED | {type(exc).__name__}: {exc}")

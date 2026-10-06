@@ -1,59 +1,114 @@
 name: Ozon Price Monitor
 
-# ВНИМАНИЕ: запуск на GitHub-hosted runner НЕ РАБОТАЕТ.
+# Как это работает
+# ---------------
+# Цену читает ваш компьютер (у него российский IP, Ozon отдаёт карточку
+# товара) и передаёт её сюда. Этот workflow отправляет сообщение в Telegram,
+# используя секреты репозитория, поэтому токен бота никогда не покидает GitHub.
 #
-# Ozon отдаёт с зарубежных и датацентровых IP страницу-заглушку
-# "Похоже, нет соединения" (HTTP 403), поэтому цену получить нельзя.
-# Это проверено экспериментально: см. README.md, раздел
+# Почему не так: "просто поставить расписание и запускать проверку здесь".
+# GitHub-hosted runner получает зарубежный датацентровый IP, и Ozon отвечает
+# страницей "Похоже, нет соединения" (HTTP 403) вместо цены.
+# Это проверено экспериментально — см. README.md, раздел
 # "Почему это не работает на GitHub Actions".
 #
-# Расписание намеренно отключено, чтобы не присылать ложные сообщения.
-# Workflow заработает, если заменить runs-on на self-hosted runner
-# с российским домашним IP.
+# Ручной запуск без параметров просто проверяет, что токен и chat id рабочие.
 
 on:
-  # schedule:
-  #   - cron: '0 */4 * * *'
   workflow_dispatch:
+    inputs:
+      price:
+        description: 'Цена в рублях (например 744). Пусто — только проверка связи.'
+        required: false
+        type: string
+      city:
+        description: 'Город доставки, как его показал Ozon'
+        required: false
+        type: string
+      product_url:
+        description: 'Ссылка на товар'
+        required: false
+        type: string
+      trend:
+        description: 'Строка с изменением цены (необязательно)'
+        required: false
+        type: string
+      error:
+        description: 'Текст ошибки, если цену получить не удалось'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  check-price:
+  notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout репозитория
-        uses: actions/checkout@v4
-
-      - name: Установка Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Установка зависимостей Python
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Установка браузера Chromium для Playwright
-        run: |
-          python -m playwright install chromium
-          python -m playwright install-deps chromium
-
-      - name: Запуск мониторинга цены
+      - name: Отправка сообщения в Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python ozon_monitor.py
+          IN_PRICE: ${{ inputs.price }}
+          IN_CITY: ${{ inputs.city }}
+          IN_URL: ${{ inputs.product_url }}
+          IN_TREND: ${{ inputs.trend }}
+          IN_ERROR: ${{ inputs.error }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import requests
 
-      - name: Сохранение логов как артефакт
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ozon-logs-${{ github.run_number }}
-          path: logs/
-          if-no-files-found: ignore
-          retention-days: 7
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+
+          price = os.environ.get("IN_PRICE", "").strip()
+          city = os.environ.get("IN_CITY", "").strip()
+          url = os.environ.get("IN_URL", "").strip()
+          trend = os.environ.get("IN_TREND", "").strip()
+          error = os.environ.get("IN_ERROR", "").strip()
+
+          name = "Кофе в зёрнах Lavazza Qualita Oro, 250 г"
+
+          if not price:
+              # No price supplied: this is a connectivity check of the bot itself.
+              text = (
+                  "✅ Ozon-монитор подключён\n\n"
+                  "Секреты Telegram в репозитории рабочие — сообщения будут приходить сюда.\n"
+                  "Цену читает ваш компьютер и передаёт её в этот workflow."
+              )
+          elif error:
+              text = (
+                  "⚠️ Не удалось проверить цену\n\n"
+                  f"Товар: {name}\n"
+                  f"Причина: {error}\n"
+              )
+              if url:
+                  text += f"\n{url}"
+          else:
+              text = (
+                  "☕️ Ozon: цена на кофе\n\n"
+                  f"Товар: {name}\n"
+                  f"Цена: {price} ₽"
+              )
+              if trend:
+                  text += f"\n{trend}"
+              if city:
+                  text += f"\nГород доставки: {city}"
+              if url:
+                  text += f"\n\n{url}"
+
+          response = requests.post(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              json={"chat_id": chat_id, "text": text, "disable_web_page_preview": False},
+              timeout=30,
+          )
+          print("Telegram HTTP", response.status_code)
+          print(response.text[:500])
+          if response.status_code != 200:
+              sys.exit(1)
+          print("Сообщение отправлено")
+          PY

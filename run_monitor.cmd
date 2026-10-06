@@ -13,6 +13,10 @@ REM Force UTF-8 so the rouble sign and Cyrillic survive redirection
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUTF8=1"
 
+REM Send the message through GitHub Actions, so the bot token stays on GitHub
+REM and never has to be stored on this computer.
+set "OZON_TELEGRAM_VIA_GITHUB=1"
+
 REM Explicit interpreter; falls back to PATH lookup if it moved
 set "PYTHON=D:\Python\Python312\python.exe"
 if not exist "%PYTHON%" set "PYTHON=python"

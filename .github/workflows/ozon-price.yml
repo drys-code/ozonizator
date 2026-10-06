@@ -1,13 +1,10 @@
 name: Ozon Price Monitor
 
 on:
-  # Запуск каждые 4 часа
   schedule:
     - cron: '0 */4 * * *'
-  # Возможность запустить вручную из вкладки Actions
   workflow_dispatch:
 
-# Нужно для загрузки артефактов (логов)
 permissions:
   contents: read
 
@@ -29,15 +26,13 @@ jobs:
       - name: Установка зависимостей Python
         run: |
           python -m pip install --upgrade pip
-          pip install playwright requests
+          pip install -r requirements.txt
 
       - name: Установка браузера Chromium для Playwright
         run: |
           playwright install chromium
           playwright install-deps chromium
 
-      # Кэшируем профиль браузера между запусками,
-      # чтобы сохранялись cookies и Ozon не выдавал капчу
       - name: Восстановление профиля браузера из кэша
         uses: actions/cache@v4
         with:

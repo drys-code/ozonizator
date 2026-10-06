@@ -16,7 +16,7 @@ SEARCH_URL = (
 )
 
 # Ваш город доставки
-DELIVERY_CITY = "Москва"
+DELIVERY_CITY = "Владивосток"
 
 USER_DATA_DIR = Path("ozon_profile")
 LOG_FILE = Path("logs/ozon_checks.txt")

@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -101,8 +102,14 @@ class PriceUnavailable(RuntimeError):
     """Raised when Ozon serves a page without a usable price."""
 
 
-def fetch_price(city: str) -> tuple[int | None, str, str]:
-    """Return (price, city_reported_by_ozon, product_title)."""
+# Ozon sometimes answers with an "Antibot Challenge Page" instead of the
+# product page. Waiting a little and retrying usually succeeds.
+ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 25
+
+
+def _fetch_once(city: str) -> tuple[int, str, str]:
+    """Single attempt: return (price, city_reported_by_ozon, product_title)."""
     headless = os.environ.get("OZON_HEADLESS", "1") != "0"
 
     with sync_playwright() as play:
@@ -126,7 +133,13 @@ def fetch_price(city: str) -> tuple[int | None, str, str]:
             page.wait_for_timeout(6000)
 
             title = page.title()
-            if "нет соединения" in title.lower():
+            lowered = title.lower()
+            if "antibot" in lowered or "challenge" in lowered:
+                raise PriceUnavailable(
+                    f"Ozon показал антибот-страницу (HTTP {status}). "
+                    "Обычно помогает повторная попытка."
+                )
+            if "нет соединения" in lowered:
                 raise PriceUnavailable(
                     "Ozon вернул страницу «Похоже, нет соединения» "
                     f"(HTTP {status}). Обычно это блокировка по IP: "
@@ -159,6 +172,24 @@ def fetch_price(city: str) -> tuple[int | None, str, str]:
             browser.close()
 
 
+def fetch_price(city: str) -> tuple[int, str, str]:
+    """Fetch the price, retrying transient anti-bot responses."""
+    last_error: Exception | None = None
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            return _fetch_once(city)
+        except Exception as exc:  # noqa: BLE001 - retried below
+            last_error = exc
+            if attempt < ATTEMPTS:
+                wait = RETRY_DELAY_SECONDS * attempt
+                log(
+                    f"attempt {attempt}/{ATTEMPTS} failed "
+                    f"({type(exc).__name__}: {exc}); retrying in {wait}s"
+                )
+                time.sleep(wait)
+    raise PriceUnavailable(f"не удалось за {ATTEMPTS} попытки: {last_error}")
+
+
 SECRETS_FILE = Path.home() / ".ozonizator" / "secrets.env"
 
 
@@ -186,10 +217,12 @@ def send_telegram(text: str) -> None:
     if not token or not chat_id:
         raise RuntimeError(
             "Не заданы TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID "
-            "(см. run_monitor.cmd или файл секретов)"
+            "(запустите py setup_telegram.py)"
         )
+    # Overridable so test_telegram_message.py can capture the outgoing message.
+    api_base = os.environ.get("OZON_TELEGRAM_API", "https://api.telegram.org")
     response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
+        f"{api_base}/bot{token}/sendMessage",
         json={
             "chat_id": chat_id,
             "text": text,

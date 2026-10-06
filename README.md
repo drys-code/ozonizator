@@ -63,6 +63,8 @@ run_monitor.cmd ──► ozon_monitor.py
 | --- | --- |
 | `ozon_monitor.py` | Проверяет цену и отправляет сообщение в Telegram |
 | `run_monitor.cmd` | Запускает проверку, пишет вывод в `logs\run.log` |
+| `setup_telegram.py` | Разовая настройка и проверка секретов Telegram |
+| `test_telegram_message.py` | Самопроверка текстов сообщений (без реального чата) |
 | `requirements.txt` | Зависимости Python |
 | `logs\ozon_checks.txt` | История проверок |
 | `logs\last_price.txt` | Предыдущая цена (для строки «изменение») |
@@ -80,34 +82,44 @@ py -m playwright install chromium
 
 ### Секреты Telegram
 
-Секреты **не** хранятся в репозитории. Скрипт читает их из файла
-`%USERPROFILE%\.ozonizator\secrets.env`:
+Секреты **не** хранятся в репозитории. Проще всего настроить их одной командой
+(токен вводится скрытно и проверяется через Telegram сразу же):
+
+```powershell
+py setup_telegram.py
+```
+
+Скрипт сохранит их в `%USERPROFILE%\.ozonizator\secrets.env`:
 
 ```
 TELEGRAM_BOT_TOKEN=123456:AA...
 TELEGRAM_CHAT_ID=123456789
 ```
 
-Либо из переменных окружения с теми же именами (они имеют приоритет).
+Либо задайте переменные окружения с теми же именами (они имеют приоритет).
 
 ### Задача в планировщике
 
 Создана задача `OzonCoffeePrice`, запуск каждые 4 часа:
 
 ```powershell
-schtasks /Query /TN "OzonCoffeePrice" /V /FO LIST
+Get-ScheduledTask -TaskName "OzonCoffeePrice"
+Get-ScheduledTaskInfo -TaskName "OzonCoffeePrice"
 ```
+
+Задача настроена с `AllowStartIfOnBatteries`, иначе Windows молча пропускает
+запуск на ноутбуке, работающем от батареи.
 
 Проверить вручную:
 
 ```powershell
-schtasks /Run /TN "OzonCoffeePrice"
+Start-ScheduledTask -TaskName "OzonCoffeePrice"
 ```
 
 Удалить:
 
 ```powershell
-schtasks /Delete /TN "OzonCoffeePrice" /F
+Unregister-ScheduledTask -TaskName "OzonCoffeePrice" -Confirm:$false
 ```
 
 ### Ручной запуск
@@ -122,6 +134,15 @@ schtasks /Delete /TN "OzonCoffeePrice" /F
 $env:OZON_HEADLESS="0"; py ozon_monitor.py
 ```
 
+### Самопроверка
+
+```powershell
+py test_telegram_message.py
+```
+
+Проверяет текст сообщений и отправку через локальную заглушку Telegram,
+не трогая реальный чат.
+
 ---
 
 ## Настройки
@@ -134,6 +155,15 @@ $env:OZON_HEADLESS="0"; py ozon_monitor.py
 | `OZON_HEADLESS` | `1` | `0` — показать окно браузера |
 
 Товар задаётся константами `PRODUCT_URL` и `PRODUCT_NAME` в `ozon_monitor.py`.
+
+---
+
+## Устойчивость к антибот-защите
+
+Ozon периодически отвечает страницей `Antibot Challenge Page` вместо карточки
+товара. Скрипт делает до 3 попыток с увеличивающейся паузой (25 и 50 секунд),
+поэтому одиночный вызов-заглушка не превращается в ложное сообщение об ошибке.
+Если все попытки не удались, приходит честное сообщение о причине.
 
 ---
 
